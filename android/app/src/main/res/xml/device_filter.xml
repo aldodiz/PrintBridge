@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Filtro de auto-apertura al conectar la impresora OFICHIDO por USB/OTG.
+  Android NO admite un comodín aquí — hay que listar vendor-id/product-id
+  reales. No los conocemos todavía (no hay hardware físico disponible al
+  escribir esto), así que este filtro está vacío a propósito: el
+  <intent-filter> de USB_DEVICE_ATTACHED en AndroidManifest.xml simplemente
+  no se dispara hasta llenarlo, sin romper nada.
+
+  Cómo obtener los valores reales una sola vez con la impresora conectada:
+  1. Instalar y abrir la app (el USB_DEVICE_ATTACHED no es necesario para
+     esto: basta con abrir la app manualmente con la impresora ya enchufada).
+  2. En la pantalla principal, la lista de "Dispositivos USB detectados"
+     muestra vendorId/productId de cada uno en decimal.
+  3. Agregar aquí:
+       <usb-device vendor-id="1234" product-id="5678" />
+     (en decimal, no hex — son los mismos números que ya usa
+     UsbPrinterModule.findPrinterDevice() para elegir la impresora).
+  4. Reconstruir la app. A partir de ahí, conectar la impresora abre/trae al
+     frente Print Bridge automáticamente.
+-->
+<resources>
+</resources>

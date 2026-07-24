@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- USB Host API (impresora térmica por USB/OTG); no requiere permiso en
+         tiempo de ejecución, solo la declaración de feature + el permiso USB
+         por-dispositivo que se pide en runtime (ver UsbPrinterModule). -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
     <application
       android:name=".MainApplication"
@@ -22,6 +26,15 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
+        <!-- Autoabre (o trae al frente) Print Bridge cuando se conecta la
+             impresora por USB/OTG, sin depender de que el operador la abra
+             a mano cada vez. -->
+        <intent-filter>
+            <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+        </intent-filter>
+        <meta-data
+            android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+            android:resource="@xml/device_filter" />
       </activity>
     </application>
 </manifest>
