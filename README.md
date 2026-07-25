@@ -1,10 +1,18 @@
 # Print Bridge
 
 App Android de un solo propósito: recoge trabajos de impresión pendientes de
-la POS (Pancherías Cuaqu) por HTTP y los manda por USB/OTG a una impresora
-térmica genérica (ESC/POS, probado para OFICHIDO 58mm). Proyecto separado
-del repo de la POS — no depende de él en runtime, solo reutiliza (portado
-a TypeScript) el mismo formato de ticket.
+la POS (Pancherías Cuaqu) por HTTP y los manda a una impresora térmica
+genérica ESC/POS (probado para OFICHIDO 58mm), por **USB/OTG o por WiFi**
+(TCP directo al puerto crudo de la impresora, configurable desde la app).
+Proyecto separado del repo de la POS — no depende de él en runtime, solo
+reutiliza (portado a TypeScript) el mismo formato de ticket.
+
+## Estado (Paso 26)
+
+Se agregó soporte dual USB/WiFi (antes solo USB) y una pantalla de estado de
+conexión en tiempo real. Ver la sección "Paso 26 — dual USB/WiFi" más abajo
+para el detalle completo. El estado del Paso 24 (USB únicamente) se conserva
+debajo para contexto histórico.
 
 ## Estado (Paso 24)
 
@@ -60,10 +68,16 @@ impresoras chinas de recibos, no para nuestro Latin-1 con acentos).
 - `android/app/src/main/java/com/printbridge/app/UsbPrinterModule.kt` — USB
   Host API: `getDeviceList`, `isPrinterReady`, `requestPermission`,
   `printBytes(bytes)`. Detecta la impresora por clase USB "Printer" (7) o,
-  si no hay ninguna así, el único dispositivo conectado.
+  si no hay ninguna así, el único dispositivo conectado. Desde el Paso 26
+  también emite el evento `UsbDeviceStateChanged` en attach/detach para
+  detección en tiempo real.
+- `android/app/src/main/java/com/printbridge/app/WifiPrinterModule.kt`
+  (Paso 26) — transporte TCP crudo: `checkConnection(ip, puerto)` (abre y
+  cierra el socket sin mandar bytes) y `printBytes(ip, puerto, bytes)`.
 - `src/escpos/receipt.ts` — puerto 1:1 de `lib/printer/receipt.ts` de la POS
   (mismo negocio, folio/fecha al final en Font B, items con modificadores,
-  pago único o mixto con referencia, mensaje de cierre).
+  pago único o mixto con referencia, mensaje de cierre). No cambia según el
+  método de transporte (USB o WiFi).
 - `src/escpos/logoRasterCommand.ts` — el comando ESC/POS del logo
   (`assets/logo-bw.png` de la POS) **precalculado una sola vez** con el
   propio `lib/printer/logo.ts` de la POS y congelado como bytes fijos: React
@@ -72,10 +86,98 @@ impresoras chinas de recibos, no para nuestro Latin-1 con acentos).
   en el archivo).
 - `src/api/printJobs.ts` — cliente de `GET /api/print-jobs/pending` y
   `POST /api/print-jobs/:id/confirm`.
-- `src/usePrintBridge.ts` — orquesta polling (cada 4s) + impresión +
-  confirmación + reintento manual.
-- `src/screens/HomeScreen.tsx` — única pantalla: URL del servidor, estado de
-  la impresora, estado del polling, último resultado, botón de reintento.
+- `src/printerConfig.ts` (Paso 26) — persiste localmente el método elegido
+  (USB/WiFi) y la IP/puerto de la impresora WiFi.
+- `src/connectionStatus.ts` (Paso 26) — lógica pura de "¿está conectada la
+  impresora del método activo?", con dependencias inyectadas para poder
+  testearla sin hardware real.
+- `src/processPrintJob.ts` — arma el ticket, imprime, confirma; recibe el
+  transporte (USB o WiFi) por inyección de dependencias, sin saber cuál es.
+- `src/usePrintBridge.ts` — orquesta polling de trabajos (cada 4s) +
+  impresión (USB o WiFi, según `printerConfig`) + confirmación + reintento
+  manual + chequeo periódico de conexión (cada 12s, Paso 26).
+- `src/screens/HomeScreen.tsx` — pantalla principal: URL del servidor,
+  estado de conexión de la impresora en tiempo real (verde/rojo), botón
+  "Probar conexión", hora del último chequeo y del último trabajo impreso,
+  estado del polling, último resultado, botón de reintento.
+- `src/screens/SettingsScreen.tsx` (Paso 26) — selector USB/WiFi y campos de
+  IP/puerto para WiFi.
+
+## Paso 26 — dual USB/WiFi + estado de conexión en tiempo real
+
+**Qué cambió respecto al Paso 24:**
+
+- **Configuración** (`src/screens/SettingsScreen.tsx`, accesible desde el
+  botón "⚙️ Configurar" de la pantalla principal): selector USB/WiFi. Si se
+  elige WiFi, aparecen los campos IP y puerto (default `9100`, el puerto
+  crudo ESC/POS estándar). Todo se persiste localmente en el dispositivo con
+  `AsyncStorage` (`src/printerConfig.ts`), no en el backend.
+- **Transporte WiFi**: módulo nativo nuevo
+  `android/.../WifiPrinterModule.kt` — mismo principio que
+  `UsbPrinterModule.kt` (solo transporte, el armado de bytes ESC/POS sigue
+  100% en JS): abre un socket TCP crudo al `ip:puerto` configurado, manda el
+  `byte[]` ya armado, cierra el socket. `checkConnection(ip, puerto)` hace lo
+  mismo pero sin mandar bytes, solo para saber si la impresora responde.
+- **`processPrintJob.ts` no cambió de forma**: ya usaba inyección de
+  dependencias (`ensurePrinterReady`, `printBytes`, `confirmJob`), así que
+  agregar WiFi fue conectar esas mismas dependencias a
+  `WifiPrinterModule` en vez de `UsbPrinterModule` según el método
+  configurado (ver `src/usePrintBridge.ts`, `processJob`). El manejo de error
+  es idéntico en ambos métodos: si falla la conexión (USB no detectado, WiFi
+  timeout/IP inaccesible/conexión rechazada), nunca se confirma el trabajo —
+  queda pendiente/error, igual que antes.
+- **Estado de conexión en tiempo real** (`src/connectionStatus.ts` +
+  `usePrintBridge.ts`): la pantalla principal siempre muestra un punto verde
+  ("conectada") o rojo ("no conectada") para el método activo, sin importar
+  cuál sea:
+  - **USB**: además de un chequeo periódico, `UsbPrinterModule.kt` ahora
+    escucha `ACTION_USB_DEVICE_ATTACHED`/`DETACHED` del sistema y emite un
+    evento a JS (`UsbDeviceStateChanged`) apenas se conecta o desconecta el
+    cable — la pantalla se actualiza sola, no hace falta refrescar a mano.
+  - **WiFi**: un chequeo periódico cada 12s (dentro del rango de 10-15s
+    pedido) abre y cierra un socket corto al puerto configurado, sin
+    imprimir nada, solo para confirmar que la impresora sigue accesible en
+    la red.
+  - También se muestra el estado del chequeo (probando/inactivo), la hora
+    del último chequeo, y la hora del último trabajo impreso con éxito.
+  - Botón **"Probar conexión"**: fuerza un chequeo inmediato sin esperar al
+    intervalo, para diagnóstico rápido desde la tablet.
+
+**Tests nuevos** (mismo patrón de dependencias simuladas que ya usaba
+`processPrintJob.test.ts` para USB — no hay forma de tener red/hardware real
+en CI):
+
+- `__tests__/processPrintJob.test.ts`: nuevo bloque "camino WiFi" — éxito
+  (imprime y confirma), timeout, y conexión rechazada; en los 3 casos de
+  error se verifica que nunca se llama a `confirmJob` sin haber impreso
+  antes, igual que en los tests de USB.
+- `__tests__/connectionStatus.test.ts`: prueba `checkConnectionStatus` con
+  mocks para USB (listo/no listo) y WiFi (responde/timeout/rechaza/sin IP
+  configurada) — cubre la lógica de detección de estado conectado/no
+  conectado en ambos métodos.
+- `npx tsc --noEmit` sin errores y `npx jest` con toda la suite en verde
+  (incluyendo los tests anteriores del Paso 24, sin regresiones).
+
+**Pendiente — requiere hardware físico** (no se puede hacer desde ningún
+entorno de desarrollo/nube):
+
+1. **USB**: lo mismo que ya estaba pendiente del Paso 24 — confirmar con la
+   OFICHIDO real conectada por OTG que imprime papel de verdad.
+2. **WiFi**: conseguir o configurar una impresora térmica ESC/POS con
+   interfaz de red (o un adaptador serial-a-Ethernet/WiFi para una que solo
+   tenga USB/serial), ponerle una IP fija en la red local, cargar esa IP y
+   el puerto (`9100` salvo que la impresora use otro) en "Configurar" de la
+   app, y confirmar que: (a) el punto de estado se pone verde con la
+   impresora encendida y en rojo al apagarla/desconectarla de la red, y (b)
+   un ticket real sale impreso y el trabajo se confirma. No se tuvo acceso a
+   este tipo de impresora en el entorno de desarrollo de este paso.
+**Ya verificado en este entorno** (igual que en el Paso 24, se instaló
+JDK 21 y Android command-line tools vía Homebrew): `./gradlew assembleDebug`
+— **BUILD SUCCESSFUL en 7m30s, 125 tareas ejecutadas**, incluyendo la
+compilación real de `WifiPrinterModule.kt`, `WifiPrinterPackage.kt`, y
+`UsbPrinterModule.kt` con el receiver de attach/detach nuevo. Solo
+advertencias menores preexistentes (deprecaciones de `react-native-safe-area-context`/`async-storage`, y una anotación `@Deprecated` faltante en
+`UsbPrinterPackage`/`WifiPrinterPackage` que ya traía el código original).
 
 ## ⚠️ Dependencia pendiente en el backend de la POS
 

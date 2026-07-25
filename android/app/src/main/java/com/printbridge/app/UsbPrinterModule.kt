@@ -31,8 +31,10 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 private const val ACTION_USB_PERMISSION = "com.printbridge.app.USB_PERMISSION"
+private const val EVENT_USB_STATE_CHANGED = "UsbDeviceStateChanged"
 private const val BULK_TRANSFER_TIMEOUT_MS = 5000
 private const val BULK_CHUNK_SIZE = 4096
 
@@ -66,6 +68,23 @@ class UsbPrinterModule(reactContext: ReactApplicationContext) :
         }
       }
 
+  // Detecta conexión/desconexión del USB en tiempo real (no solo al abrir la
+  // app o al hacer polling manual): emite un evento a JS cada vez que el
+  // sistema reporta un dispositivo USB conectado o retirado, para que la
+  // pantalla de estado se actualice sola sin esperar al próximo refresh.
+  private val attachDetachReceiver =
+      object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+          if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
+              intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) {
+            return
+          }
+          reactApplicationContext
+              .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+              .emit(EVENT_USB_STATE_CHANGED, null)
+        }
+      }
+
   init {
     val filter = IntentFilter(ACTION_USB_PERMISSION)
     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -75,14 +94,41 @@ class UsbPrinterModule(reactContext: ReactApplicationContext) :
       @Suppress("UnspecifiedRegisterReceiverFlag")
       reactContext.registerReceiver(permissionReceiver, filter)
     }
+
+    val attachDetachFilter =
+        IntentFilter().apply {
+          addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+          addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+      reactContext.registerReceiver(
+          attachDetachReceiver, attachDetachFilter, Context.RECEIVER_NOT_EXPORTED)
+    } else {
+      @Suppress("UnspecifiedRegisterReceiverFlag")
+      reactContext.registerReceiver(attachDetachReceiver, attachDetachFilter)
+    }
   }
 
   override fun getName(): String = "UsbPrinterModule"
+
+  // Requerido por NativeEventEmitter de JS (RN se queja si un módulo emite
+  // eventos pero no expone addListener/removeListeners); no hace falta lógica
+  // propia porque el emit ya se dispara solo desde el BroadcastReceiver.
+  @ReactMethod
+  fun addListener(eventName: String) {}
+
+  @ReactMethod
+  fun removeListeners(count: Int) {}
 
   override fun invalidate() {
     super.invalidate()
     try {
       reactApplicationContext.unregisterReceiver(permissionReceiver)
+    } catch (e: IllegalArgumentException) {
+      // ya estaba desregistrado, no pasa nada.
+    }
+    try {
+      reactApplicationContext.unregisterReceiver(attachDetachReceiver)
     } catch (e: IllegalArgumentException) {
       // ya estaba desregistrado, no pasa nada.
     }

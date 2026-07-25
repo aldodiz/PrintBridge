@@ -1,7 +1,7 @@
 // Wrapper tipado del módulo nativo Kotlin (ver android/.../UsbPrinterModule.kt).
 // Solo transporte USB: enumerar dispositivos, pedir permiso, mandar bytes
 // crudos. El armado del ticket vive en src/escpos/receipt.ts.
-import { NativeModules } from "react-native";
+import { NativeEventEmitter, NativeModules } from "react-native";
 
 export type UsbDeviceInfo = {
   deviceName: string;
@@ -36,3 +36,17 @@ export const UsbPrinter: UsbPrinterModuleType = {
     UsbPrinterModule?.printBytes(bytes) ??
     Promise.reject(new Error("UsbPrinterModule nativo no disponible")),
 };
+
+/**
+ * Se suscribe a los eventos "UsbDeviceStateChanged" que emite el nativo cada
+ * vez que se conecta o desconecta un dispositivo USB (ver
+ * UsbPrinterModule.kt), para poder reflejar el estado en tiempo real en vez
+ * de solo al refrescar manualmente o al abrir la app. Devuelve una función
+ * para des-suscribirse.
+ */
+export function subscribeToUsbDeviceChanges(onChange: () => void): () => void {
+  if (!UsbPrinterModule) return () => {};
+  const emitter = new NativeEventEmitter(UsbPrinterModule as never);
+  const subscription = emitter.addListener("UsbDeviceStateChanged", onChange);
+  return () => subscription.remove();
+}

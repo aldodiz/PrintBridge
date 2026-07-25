@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   SafeAreaView,
   ScrollView,
@@ -10,31 +10,65 @@ import {
   View,
 } from "react-native";
 import { usePrintBridge } from "../usePrintBridge";
+import { SettingsScreen } from "./SettingsScreen";
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <View style={[styles.dot, { backgroundColor: ok ? "#22c55e" : "#ef4444" }]} />;
 }
 
+function formatTime(date: Date | null): string {
+  if (!date) return "nunca";
+  return date.toLocaleTimeString();
+}
+
 export function HomeScreen() {
+  const [showSettings, setShowSettings] = useState(false);
   const {
     baseUrl,
     baseUrlLoaded,
     setBaseUrl,
     polling,
     setPolling,
-    usbReady,
     usbDevices,
-    refreshUsbStatus,
     lastResult,
     failedJob,
     retryFailedJob,
+    printerConfig,
+    printerConfigLoaded,
+    setPrinterConfig,
+    connected,
+    checkingConnection,
+    lastCheckedAt,
+    lastSuccessAt,
+    checkConnection,
   } = usePrintBridge();
+
+  if (showSettings) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <SettingsScreen
+          printerConfig={printerConfig}
+          onChange={setPrinterConfig}
+          onClose={() => setShowSettings(false)}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  const methodLabel = printerConfig.method === "usb" ? "USB" : "WiFi";
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.title}>Print Bridge</Text>
-        <Text style={styles.subtitle}>Puente de impresión USB — Pancherías Cuaqu</Text>
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={styles.title}>Print Bridge</Text>
+            <Text style={styles.subtitle}>Puente de impresión — Pancherías Cuaqu</Text>
+          </View>
+          <TouchableOpacity style={styles.settingsButton} onPress={() => setShowSettings(true)}>
+            <Text style={styles.settingsButtonText}>⚙️ Configurar</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Servidor de la POS</Text>
@@ -51,15 +85,32 @@ export function HomeScreen() {
 
         <View style={styles.card}>
           <View style={styles.row}>
-            <StatusDot ok={usbReady} />
+            <StatusDot ok={connected} />
             <Text style={styles.cardTitle}>
-              Impresora USB: {usbReady ? "detectada y lista" : "no detectada"}
+              Impresora {methodLabel}: {connected ? "conectada" : "no conectada"}
             </Text>
           </View>
-          <TouchableOpacity style={styles.secondaryButton} onPress={refreshUsbStatus}>
-            <Text style={styles.secondaryButtonText}>Volver a revisar</Text>
-          </TouchableOpacity>
-          {usbDevices.length > 0 && (
+          {printerConfig.method === "wifi" && (
+            <Text style={styles.hint}>
+              {printerConfig.wifiIp
+                ? `${printerConfig.wifiIp}:${printerConfig.wifiPort}`
+                : "Sin IP configurada — ve a Configurar"}
+            </Text>
+          )}
+          <View style={styles.row}>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={checkConnection}
+              disabled={checkingConnection}
+            >
+              <Text style={styles.secondaryButtonText}>
+                {checkingConnection ? "Probando…" : "Probar conexión"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>Último chequeo: {formatTime(lastCheckedAt)}</Text>
+          <Text style={styles.hint}>Último trabajo impreso: {formatTime(lastSuccessAt)}</Text>
+          {printerConfig.method === "usb" && usbDevices.length > 0 && (
             <View style={styles.deviceList}>
               {usbDevices.map((device) => (
                 <Text key={device.deviceName} style={styles.deviceText}>
@@ -76,7 +127,7 @@ export function HomeScreen() {
           <View style={styles.row}>
             <StatusDot ok={polling} />
             <Text style={styles.cardTitle}>
-              Polling: {polling ? "activo" : "inactivo"}
+              Polling de trabajos: {polling ? "activo" : "inactivo"}
             </Text>
             <Switch
               value={polling}
@@ -114,6 +165,8 @@ export function HomeScreen() {
             </Text>
           </TouchableOpacity>
         )}
+
+        {!printerConfigLoaded && <Text style={styles.hint}>Cargando configuración…</Text>}
       </ScrollView>
     </SafeAreaView>
   );
@@ -122,8 +175,16 @@ export function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0f172a" },
   scroll: { padding: 20, gap: 16 },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   title: { fontSize: 28, fontWeight: "700", color: "#f8fafc" },
   subtitle: { fontSize: 14, color: "#94a3b8", marginBottom: 8 },
+  settingsButton: {
+    backgroundColor: "#334155",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  settingsButtonText: { color: "#f8fafc", fontWeight: "500" },
   card: { backgroundColor: "#1e293b", borderRadius: 16, padding: 16, gap: 10 },
   cardTitle: { fontSize: 16, fontWeight: "600", color: "#f8fafc" },
   row: { flexDirection: "row", alignItems: "center", gap: 8 },

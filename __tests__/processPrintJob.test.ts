@@ -100,3 +100,56 @@ describe("processPrintJob — camino de éxito (imprimir + confirmar)", () => {
     expect(calls.printBytes).toHaveLength(1); // sí llegó a imprimir
   });
 });
+
+// Mismo patrón de mocks que arriba, pero simulando las dependencias de la
+// impresora WiFi (TCP a un puerto ESC/POS) en vez de USB — processPrintJob
+// no distingue el método, solo recibe las deps ya conectadas al transporte
+// correcto (ver usePrintBridge.ts), así que el comportamiento debe ser
+// idéntico: nunca confirmar sin haber impreso.
+describe("processPrintJob — camino WiFi (éxito, timeout, conexión rechazada)", () => {
+  it("arma el ticket con texto real, lo manda por TCP y confirma el trabajo por su id", async () => {
+    const { deps, calls } = makeDeps();
+
+    const result = await processPrintJob(sampleJob, deps);
+
+    expect(result).toEqual({ ok: true });
+    expect(calls.printBytes).toHaveLength(1);
+    const printedText = calls.printBytes[0].map((b) => String.fromCharCode(b)).join("");
+    expect(printedText).toContain("Folio: F1TEST01");
+    expect(calls.confirmJob).toEqual(["job-42"]);
+  });
+
+  it("no confirma si la conexión WiFi no está disponible (chequeo previo falla)", async () => {
+    const { deps, calls } = makeDeps({ ensurePrinterReady: jest.fn().mockResolvedValue(false) });
+
+    const result = await processPrintJob(sampleJob, deps);
+
+    expect(result).toEqual({ ok: false, message: "Impresora no detectada o sin permiso USB" });
+    expect(calls.printBytes).toHaveLength(0);
+    expect(calls.confirmJob).toHaveLength(0);
+  });
+
+  it("no confirma si la conexión TCP da timeout", async () => {
+    const { deps, calls } = makeDeps({
+      printBytes: jest.fn().mockRejectedValue(new Error("TIMEOUT")),
+    });
+
+    const result = await processPrintJob(sampleJob, deps);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("Falló la impresión");
+    expect(calls.confirmJob).toHaveLength(0);
+  });
+
+  it("no confirma si la conexión TCP es rechazada (impresora apagada/IP incorrecta)", async () => {
+    const { deps, calls } = makeDeps({
+      printBytes: jest.fn().mockRejectedValue(new Error("CONNECTION_REFUSED")),
+    });
+
+    const result = await processPrintJob(sampleJob, deps);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("Falló la impresión");
+    expect(calls.confirmJob).toHaveLength(0);
+  });
+});
