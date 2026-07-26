@@ -7,187 +7,147 @@ genérica ESC/POS (probado para OFICHIDO 58mm), por **USB/OTG o por WiFi**
 Proyecto separado del repo de la POS — no depende de él en runtime, solo
 reutiliza (portado a TypeScript) el mismo formato de ticket.
 
-## Estado (Paso 26)
+> Para el estado actual del trabajo, tareas pendientes y contexto de la
+> sesión en curso, ver [`SESSION.md`](./SESSION.md). El historial de
+> decisiones y cambios pasados está en [`CHANGELOG.md`](./CHANGELOG.md).
+> Si vas a trabajar en este proyecto con un asistente de IA, leé
+> [`AGENTS.md`](./AGENTS.md) primero.
 
-Se agregó soporte dual USB/WiFi (antes solo USB) y una pantalla de estado de
-conexión en tiempo real. Ver la sección "Paso 26 — dual USB/WiFi" más abajo
-para el detalle completo. El estado del Paso 24 (USB únicamente) se conserva
-debajo para contexto histórico.
+## Propósito
 
-## Estado (Paso 24)
+- Reemplazar la impresión directa desde el navegador/servidor de la POS por
+  un puente dedicado que corre en una tablet Android junto a la impresora.
+- La POS encola trabajos de impresión (`PrintJob`) en vez de intentar
+  imprimir ella misma; Print Bridge hace polling, imprime, y confirma.
+- Soportar dos formas de conectar la impresora térmica sin cambiar el
+  formato del ticket: **USB/OTG** (Android USB Host API) o **WiFi** (socket
+  TCP crudo al puerto ESC/POS estándar, por defecto `9100`).
+- Mostrar en todo momento el estado de conexión de la impresora (conectada/no
+  conectada) para que quien opera la tablet pueda diagnosticar rápido.
 
-**Hecho y verificado en este entorno** (código, compilación Gradle real,
-ejecución en emulador Android, polling contra servidor real, camino de
-éxito y de fallo con tests automatizados — detalle completo más abajo):
-investigación de librerías, módulo nativo Kotlin USB, puerto del formato de
-ticket, cliente de polling/confirmación, UI, manejo de errores, reintento
-manual.
+## Tecnologías utilizadas
 
-**Pendiente — requiere el hardware físico, solo lo puede hacer alguien con
-el Redmi Pad SE + la impresora OFICHIDO en la mano** (no es posible desde
-ningún entorno de desarrollo/nube, ver la sección de verificación):
-1. `npx react-native run-android` con el tablet conectado.
-2. Confirmar que la OFICHIDO aparece en "Dispositivos USB detectados" y
-   agregar su vendor-id/product-id a `device_filter.xml` (instrucciones ahí).
-3. Insertar un `PrintJob` de prueba (o usar el mock de este repo) y
-   confirmar que sale un ticket físico impreso y que el trabajo se marca
-   confirmado.
+- **React Native 0.86** + **React 19** + **TypeScript 5**.
+- **Kotlin** para los módulos nativos Android (`UsbPrinterModule`,
+  `WifiPrinterModule`) — no hay librería de npm que exponga tanto transporte
+  USB genérico como envío de bytes ESC/POS crudos (ver
+  [CHANGELOG.md](./CHANGELOG.md) para el detalle de la investigación de
+  librerías que llevó a esta decisión).
+- **Android USB Host API** para el transporte USB; sockets `java.net.Socket`
+  crudos para el transporte WiFi (no HTTP, protocolo raw ESC/POS por TCP).
+- **`@react-native-async-storage/async-storage`** para persistir
+  configuración local en el dispositivo (URL de la POS, método de impresión,
+  IP/puerto WiFi).
+- **Jest** + **react-test-renderer** para tests unitarios; **ESLint** +
+  **Prettier** para estilo de código.
+- **Gradle** (AGP + Kotlin) para el build Android; `compileSdk`/`targetSdk`
+  36, `minSdk` 24 (ver `android/build.gradle`).
 
-También sigue pendiente, del lado del repo de la POS: implementar
-`PrintJob` y `/api/print-jobs/*` (ver "Dependencia pendiente en el backend
-de la POS" más abajo) — sin eso, Print Bridge no tiene de dónde jalar
-trabajos reales todavía.
+## Instalación
 
-## Investigación de librerías (Paso 24) — resultado
+Requiere Node ≥ 22.11 (ver `engines` en `package.json`), y para compilar
+Android: JDK 21 y Android SDK (`platform-tools`, `platforms;android-36`,
+`build-tools;36.0.0`). En macOS, si no los tenés instalados:
 
-**No se encontró ninguna librería de React Native activa que combine**
-soporte de impresora USB genérica **y** un método para mandar bytes ESC/POS
-crudos (arbitrarios) — que es el requisito duro para reutilizar el ticket ya
-armado en la POS (`lib/printer/receipt.ts`, con logo rasterizado, cambio de
-fuente para folio/fecha, etc.):
+```bash
+brew install openjdk@21 android-commandlinetools
+yes | sdkmanager --licenses
+sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+echo "sdk.dir=$(brew --prefix)/share/android-commandlinetools" > android/local.properties
+```
 
-| Librería | USB | Bytes crudos | Estado |
-|---|---|---|---|
-| `react-native-esc-pos-printer` (tr3v3r) | sí | no (solo Epson ePOS SDK, protocolo propietario) | mantenida, pero atada a impresoras Epson |
-| `react-native-usb-escpos-printer` (Sunama) | sí | **no** — API revisada en código fuente (`RNUsbPrinterModule.java`): solo expone `printText`, `printColumn`, `printPic`, `printQRCode`, etc. Todo el armado de bytes ESC/POS pasa por un helper Java interno (`PrinterCommand`), nunca expuesto a JS | el adapter USB (permisos, bulk transfer) sí sirve de referencia |
-| `react-native-thermal-receipt-printer` y forks | sí (Android) | no, mismo patrón que arriba (`printText`/`printBill`) | activa mantención en varios forks |
-| `react-native-pos-printer` (gzero1) | **no** (USB listado como "Todo", sin implementar) | sí (encoder de comandos) | alfa, sin USB |
-| `react-native-esc-pos` (leesiongchan) | no | no | archivada desde 2021 |
+Luego, dependencias del proyecto:
 
-**Decisión:** módulo nativo Kotlin propio y mínimo
-(`android/app/.../UsbPrinterModule.kt`), como alternativa explícitamente
-prevista en el encargo si no había librería viable. Solo hace transporte USB
-(enumerar dispositivos, pedir permiso, `bulkTransfer` de un `byte[]`); el
-100% del formato del ticket vive en JS (`src/escpos/receipt.ts`), igual que
-en la POS. Esto evita además quedar atado a un encoding de texto ajeno
-(la mayoría de esas librerías fuerza GBK para el texto, pensado para
-impresoras chinas de recibos, no para nuestro Latin-1 con acentos).
+```bash
+cd PrintBridge
+npm install
+```
 
-## Arquitectura
+## Ejecución
 
-- `android/app/src/main/java/com/printbridge/app/UsbPrinterModule.kt` — USB
-  Host API: `getDeviceList`, `isPrinterReady`, `requestPermission`,
-  `printBytes(bytes)`. Detecta la impresora por clase USB "Printer" (7) o,
-  si no hay ninguna así, el único dispositivo conectado. Desde el Paso 26
-  también emite el evento `UsbDeviceStateChanged` en attach/detach para
-  detección en tiempo real.
-- `android/app/src/main/java/com/printbridge/app/WifiPrinterModule.kt`
-  (Paso 26) — transporte TCP crudo: `checkConnection(ip, puerto)` (abre y
-  cierra el socket sin mandar bytes) y `printBytes(ip, puerto, bytes)`.
-- `src/escpos/receipt.ts` — puerto 1:1 de `lib/printer/receipt.ts` de la POS
-  (mismo negocio, folio/fecha al final en Font B, items con modificadores,
-  pago único o mixto con referencia, mensaje de cierre). No cambia según el
-  método de transporte (USB o WiFi).
-- `src/escpos/logoRasterCommand.ts` — el comando ESC/POS del logo
-  (`assets/logo-bw.png` de la POS) **precalculado una sola vez** con el
-  propio `lib/printer/logo.ts` de la POS y congelado como bytes fijos: React
-  Native no trae `zlib`/`fs` de Node para decodificar el PNG en runtime. Si
-  el logo cambia en la POS, hay que regenerar este archivo (ver comentario
-  en el archivo).
-- `src/api/printJobs.ts` — cliente de `GET /api/print-jobs/pending` y
-  `POST /api/print-jobs/:id/confirm`.
-- `src/printerConfig.ts` (Paso 26) — persiste localmente el método elegido
-  (USB/WiFi) y la IP/puerto de la impresora WiFi.
-- `src/connectionStatus.ts` (Paso 26) — lógica pura de "¿está conectada la
-  impresora del método activo?", con dependencias inyectadas para poder
-  testearla sin hardware real.
-- `src/processPrintJob.ts` — arma el ticket, imprime, confirma; recibe el
-  transporte (USB o WiFi) por inyección de dependencias, sin saber cuál es.
-- `src/usePrintBridge.ts` — orquesta polling de trabajos (cada 4s) +
-  impresión (USB o WiFi, según `printerConfig`) + confirmación + reintento
-  manual + chequeo periódico de conexión (cada 12s, Paso 26).
-- `src/screens/HomeScreen.tsx` — pantalla principal: URL del servidor,
-  estado de conexión de la impresora en tiempo real (verde/rojo), botón
-  "Probar conexión", hora del último chequeo y del último trabajo impreso,
-  estado del polling, último resultado, botón de reintento.
-- `src/screens/SettingsScreen.tsx` (Paso 26) — selector USB/WiFi y campos de
-  IP/puerto para WiFi.
+```bash
+npm start              # Metro bundler
+npm run android         # build + instala en tablet/emulador conectado
+npm test                # suite de Jest
+npm run lint            # ESLint
+```
 
-## Paso 26 — dual USB/WiFi + estado de conexión en tiempo real
+Para compilar solo el APK debug sin lanzarlo:
 
-**Qué cambió respecto al Paso 24:**
+```bash
+cd android && ./gradlew assembleDebug
+```
 
-- **Configuración** (`src/screens/SettingsScreen.tsx`, accesible desde el
-  botón "⚙️ Configurar" de la pantalla principal): selector USB/WiFi. Si se
-  elige WiFi, aparecen los campos IP y puerto (default `9100`, el puerto
-  crudo ESC/POS estándar). Todo se persiste localmente en el dispositivo con
-  `AsyncStorage` (`src/printerConfig.ts`), no en el backend.
-- **Transporte WiFi**: módulo nativo nuevo
-  `android/.../WifiPrinterModule.kt` — mismo principio que
-  `UsbPrinterModule.kt` (solo transporte, el armado de bytes ESC/POS sigue
-  100% en JS): abre un socket TCP crudo al `ip:puerto` configurado, manda el
-  `byte[]` ya armado, cierra el socket. `checkConnection(ip, puerto)` hace lo
-  mismo pero sin mandar bytes, solo para saber si la impresora responde.
-- **`processPrintJob.ts` no cambió de forma**: ya usaba inyección de
-  dependencias (`ensurePrinterReady`, `printBytes`, `confirmJob`), así que
-  agregar WiFi fue conectar esas mismas dependencias a
-  `WifiPrinterModule` en vez de `UsbPrinterModule` según el método
-  configurado (ver `src/usePrintBridge.ts`, `processJob`). El manejo de error
-  es idéntico en ambos métodos: si falla la conexión (USB no detectado, WiFi
-  timeout/IP inaccesible/conexión rechazada), nunca se confirma el trabajo —
-  queda pendiente/error, igual que antes.
-- **Estado de conexión en tiempo real** (`src/connectionStatus.ts` +
-  `usePrintBridge.ts`): la pantalla principal siempre muestra un punto verde
-  ("conectada") o rojo ("no conectada") para el método activo, sin importar
-  cuál sea:
-  - **USB**: además de un chequeo periódico, `UsbPrinterModule.kt` ahora
-    escucha `ACTION_USB_DEVICE_ATTACHED`/`DETACHED` del sistema y emite un
-    evento a JS (`UsbDeviceStateChanged`) apenas se conecta o desconecta el
-    cable — la pantalla se actualiza sola, no hace falta refrescar a mano.
-  - **WiFi**: un chequeo periódico cada 12s (dentro del rango de 10-15s
-    pedido) abre y cierra un socket corto al puerto configurado, sin
-    imprimir nada, solo para confirmar que la impresora sigue accesible en
-    la red.
-  - También se muestra el estado del chequeo (probando/inactivo), la hora
-    del último chequeo, y la hora del último trabajo impreso con éxito.
-  - Botón **"Probar conexión"**: fuerza un chequeo inmediato sin esperar al
-    intervalo, para diagnóstico rápido desde la tablet.
+### Probarlo con hardware real
 
-**Tests nuevos** (mismo patrón de dependencias simuladas que ya usaba
-`processPrintJob.test.ts` para USB — no hay forma de tener red/hardware real
-en CI):
+1. **USB**: conectar la impresora por USB/OTG, abrir la app — la pantalla
+   principal lista los dispositivos USB detectados con su vendor-id/
+   product-id. Opcionalmente agregarlos a
+   `android/app/src/main/res/xml/device_filter.xml` para que conectar la
+   impresora abra la app automáticamente.
+2. **WiFi**: en la pantalla de Configurar, elegir método WiFi e ingresar la
+   IP y puerto (default `9100`) de la impresora en la red local.
+3. **Probar el polling sin esperar al backend real de la POS**: levantar
+   `node scripts/mock-print-jobs-server.js` (implementa el contrato
+   documentado en `src/api/printJobs.ts`) y poner `http://localhost:PUERTO`
+   (o la IP de la máquina si es un dispositivo físico) como servidor de la
+   POS en la app.
+4. Activar el switch de polling y confirmar que el ticket se imprime con
+   texto real y que el trabajo se marca confirmado (deja de aparecer en
+   `/pending`). Para probar el flujo de error, desconectar la impresora a
+   mitad de un ciclo — debe aparecer el error en pantalla y el botón
+   "Reintentar".
 
-- `__tests__/processPrintJob.test.ts`: nuevo bloque "camino WiFi" — éxito
-  (imprime y confirma), timeout, y conexión rechazada; en los 3 casos de
-  error se verifica que nunca se llama a `confirmJob` sin haber impreso
-  antes, igual que en los tests de USB.
-- `__tests__/connectionStatus.test.ts`: prueba `checkConnectionStatus` con
-  mocks para USB (listo/no listo) y WiFi (responde/timeout/rechaza/sin IP
-  configurada) — cubre la lógica de detección de estado conectado/no
-  conectado en ambos métodos.
-- `npx tsc --noEmit` sin errores y `npx jest` con toda la suite en verde
-  (incluyendo los tests anteriores del Paso 24, sin regresiones).
+## Estructura del proyecto
 
-**Pendiente — requiere hardware físico** (no se puede hacer desde ningún
-entorno de desarrollo/nube):
+```
+android/app/src/main/java/com/printbridge/app/
+  UsbPrinterModule.kt     # transporte USB Host API + evento attach/detach
+  UsbPrinterPackage.kt
+  WifiPrinterModule.kt    # transporte TCP crudo (checkConnection, printBytes)
+  WifiPrinterPackage.kt
+  MainActivity.kt
+  MainApplication.kt      # registra los dos ReactPackage nativos
+src/
+  api/printJobs.ts        # cliente GET /pending, POST /:id/confirm
+  escpos/receipt.ts        # armado de bytes ESC/POS del ticket (puerto de la POS)
+  escpos/logoRasterCommand.ts  # bytes fijos del logo, precalculados
+  native/UsbPrinter.ts     # wrapper tipado del módulo nativo USB
+  native/WifiPrinter.ts    # wrapper tipado del módulo nativo WiFi
+  printerConfig.ts         # persistencia local: método USB/WiFi, IP, puerto
+  connectionStatus.ts      # lógica pura: ¿está conectada la impresora activa?
+  processPrintJob.ts        # orquestación de un trabajo: imprimir + confirmar
+  usePrintBridge.ts         # hook: polling, estado, conexión, dependencias reales
+  screens/HomeScreen.tsx     # pantalla principal: estado, polling, resultado
+  screens/SettingsScreen.tsx # selector de método + IP/puerto WiFi
+__tests__/                 # Jest: receipt, processPrintJob, connectionStatus, App
+scripts/mock-print-jobs-server.js  # servidor mock del contrato de la POS
+```
 
-1. **USB**: lo mismo que ya estaba pendiente del Paso 24 — confirmar con la
-   OFICHIDO real conectada por OTG que imprime papel de verdad.
-2. **WiFi**: conseguir o configurar una impresora térmica ESC/POS con
-   interfaz de red (o un adaptador serial-a-Ethernet/WiFi para una que solo
-   tenga USB/serial), ponerle una IP fija en la red local, cargar esa IP y
-   el puerto (`9100` salvo que la impresora use otro) en "Configurar" de la
-   app, y confirmar que: (a) el punto de estado se pone verde con la
-   impresora encendida y en rojo al apagarla/desconectarla de la red, y (b)
-   un ticket real sale impreso y el trabajo se confirma. No se tuvo acceso a
-   este tipo de impresora en el entorno de desarrollo de este paso.
-**Ya verificado en este entorno** (igual que en el Paso 24, se instaló
-JDK 21 y Android command-line tools vía Homebrew): `./gradlew assembleDebug`
-— **BUILD SUCCESSFUL en 7m30s, 125 tareas ejecutadas**, incluyendo la
-compilación real de `WifiPrinterModule.kt`, `WifiPrinterPackage.kt`, y
-`UsbPrinterModule.kt` con el receiver de attach/detach nuevo. Solo
-advertencias menores preexistentes (deprecaciones de `react-native-safe-area-context`/`async-storage`, y una anotación `@Deprecated` faltante en
-`UsbPrinterPackage`/`WifiPrinterPackage` que ya traía el código original).
+### Arquitectura de impresión
 
-## ⚠️ Dependencia pendiente en el backend de la POS
+- El armado de bytes ESC/POS (`src/escpos/receipt.ts`) es **independiente
+  del transporte**: no sabe ni le importa si el resultado se manda por USB o
+  WiFi.
+- `src/processPrintJob.ts` orquesta "arma ticket → imprime → confirma" con
+  **inyección de dependencias** (`ensurePrinterReady`, `printBytes`,
+  `confirmJob`); no conoce el método de transporte, solo llama a las
+  funciones que le pasan. Esto permite testear el flujo completo con
+  impresoras simuladas (no hay forma de tener hardware térmico real en CI).
+- `src/usePrintBridge.ts` conecta esas dependencias a `UsbPrinter` o
+  `WifiPrinter` según `printerConfig.method`, y mantiene el estado de
+  conexión (chequeo periódico cada ~12s + eventos en tiempo real para USB).
+- **Regla de error no negociable, igual para ambos métodos**: si falla la
+  conexión o la impresión (USB no detectado, WiFi timeout/rechazado), el
+  trabajo **nunca se confirma** — queda pendiente para reintentar. Se
+  prefiere el riesgo de un duplicado ocasional sobre el de perder una venta
+  sin ticket impreso.
 
-`GET /api/print-jobs/pending` y `POST /api/print-jobs/:id/confirm`
-**no existen todavía** en el repo de la POS — se verificó directamente en el
-código (`lib/printer/print-order.ts` solo tiene el comentario "queda
-pendiente encolarlo como PrintJob para que el bridge lo recoja"). No hay
-modelo `PrintJob` en `prisma/schema.prisma`. Por instrucción explícita de
-este paso **no se tocó el repo de la POS**, así que Print Bridge se
-construyó contra el contrato documentado en `src/api/printJobs.ts`:
+### Contrato con el backend de la POS
+
+`src/api/printJobs.ts` asume este contrato (documentado ahí mismo, y
+replicado por `scripts/mock-print-jobs-server.js` para poder desarrollar sin
+el backend real):
 
 ```
 GET  {baseUrl}/api/print-jobs/pending
@@ -197,89 +157,22 @@ POST {baseUrl}/api/print-jobs/:id/confirm
   -> 200 (cualquier body) al confirmar impreso
 ```
 
-`ReceiptData` es exactamente el mismo shape que ya devuelve
-`GET /api/orders/:id/receipt` en la POS (folio, fecha, items con
-modificadores, pagos con método/monto/referencia, total) — lo más simple
-para implementar `/api/print-jobs/pending` en la POS sería una tabla
-`PrintJob` con `orderId` + `status`, y reusar `loadOrderReceiptData` para
-construir el campo `ticket` de cada trabajo pendiente.
+`ReceiptData` es el mismo shape que devuelve `GET /api/orders/:id/receipt`
+en el repo de la POS. **Este proyecto no toca el repo de la POS** — ver
+[SESSION.md](./SESSION.md) para el estado de esa dependencia pendiente.
 
-**Antes de dar por terminado este paso en producción, alguien debe:**
-1. Crear el modelo `PrintJob` (status: pending/printed) y los 2 endpoints en
-   el repo de la POS.
-2. Encolar un `PrintJob` cada vez que se cobra una orden (en vez de que
-   `/api/print` intente imprimir directo, como hoy).
-3. Confirmar que el shape de `ticket` coincide con `ReceiptData` de este
-   proyecto (`src/escpos/receipt.ts`) — si cambia, hay que ajustar ambos.
+## Notas para un desarrollador nuevo
 
-## ✅ Verificación real hecha en este entorno
-
-Este entorno no traía Android SDK/Java instalado, pero se instaló todo vía
-Homebrew (`android-commandlinetools`, `openjdk@21`) y se corrió un ciclo
-completo real, no solo type-check:
-
-- **`./gradlew assembleDebug` compiló e incluyó `UsbPrinterModule.kt`**
-  (BUILD SUCCESSFUL, solo warnings menores ya corregidos).
-- **Se creó un AVD (Android 14, arm64, Pixel) y la app corrió en él**:
-  se instaló el APK, se abrió, y renderizó la pantalla principal completa
-  (título, campo de servidor, estado de impresora, switch de polling).
-- **La impresora USB se reportó correctamente como "no detectada"** — el
-  emulador no tiene un dispositivo USB físico adjunto, así que ese es el
-  resultado correcto; confirma que `UsbPrinterModule.getDeviceList()` /
-  `isPrinterReady()` se llaman de verdad desde JS sin crashear.
-- **Polling end-to-end contra un servidor real**: se levantó un mock local
-  (`scripts/mock-print-jobs-server.js`) con el contrato documentado abajo y
-  un ticket de prueba con texto real (folio `F1TEST01`, ChoriDog, etc.). La
-  app hizo `GET /api/print-jobs/pending` cada ~4s (confirmado en el log del
-  servidor), mostró el folio real en pantalla, y al no haber impresora
-  **mostró el error visible "Ticket F1TEST01: Impresora no detectada o sin
-  permiso USB" sin confirmar el trabajo** (se verificó que el mock nunca
-  recibió el POST de confirm) — exactamente el comportamiento pedido en el
-  punto 6. El botón "Reintentar ticket F1TEST01" apareció y funcionó sin
-  crashear al tocarlo.
-- **Camino de ÉXITO (imprimir + confirmar) verificado con dependencias
-  simuladas** (`__tests__/processPrintJob.test.ts`): la orquestación real
-  (`src/processPrintJob.ts`) se extrajo de `usePrintBridge.ts` para poder
-  inyectarle un `UsbPrinter`/`confirmJob` simulados y probar el flujo
-  completo automatizado — no hay forma de tener una impresora térmica
-  física en un entorno de CI, así que esta es la técnica estándar para
-  verificar código de hardware sin hardware (igual que probar un cobro con
-  una pasarela de pago simulada en vez de una tarjeta real). Los tests
-  confirman: (a) con la impresora "lista", el ticket con texto real (folio,
-  negocio, items) se manda a imprimir y **el trabajo se confirma por su id
-  exacto**; (b) si la impresora no está lista, si falla la escritura USB, o
-  si falla la confirmación por red, **nunca se llama a confirm sin haber
-  impreso antes** — en los 3 casos de error se verifica explícitamente que
-  `confirmJob` no se invocó (o si ya se había impreso, que sí se había
-  llamado a imprimir primero).
-
-**Lo único que de verdad no se pudo probar, porque requiere un objeto físico
-que no existe en ningún entorno de nube (no es cuestión de herramientas ni
-de esfuerzo)**: que la OFICHIDO real responda al `bulkTransfer` de
-`UsbPrinterModule.kt` y saque papel impreso. Ver la sección siguiente para
-ese último paso, que solo se puede hacer con el Redmi Pad SE + la impresora
-conectados de verdad.
-
-## Cómo probarlo con hardware real
-
-```
-cd PrintBridge
-npm install
-npx react-native run-android   # con el tablet conectado por USB-debug, o un emulador
-```
-
-1. **Obtener el vendor-id/product-id real de la OFICHIDO**: conectar la
-   impresora por USB/OTG, abrir la app — la pantalla principal lista los
-   dispositivos USB detectados con sus IDs. Opcionalmente, agregarlos a
-   `android/app/src/main/res/xml/device_filter.xml` para que conectar la
-   impresora abra la app automáticamente (ver comentario en ese archivo).
-2. **Probar el polling sin esperar al backend real**: levantar un mock
-   rápido (`json-server`, o una función serverless de prueba) que responda
-   el contrato de arriba con un ticket de ejemplo, y poner esa URL en el
-   campo de la app. También sirve insertar una fila de prueba directamente
-   en la tabla `PrintJob` de la POS una vez exista.
-3. Activar el switch de polling y confirmar que el ticket se imprime con
-   texto real (nombre del negocio, folio, items) y que el trabajo se marca
-   confirmado (deja de aparecer en `/pending`).
-4. Para probar el flujo de error: desconectar la impresora a mitad de un
-   ciclo — debe aparecer el error en pantalla y el botón "Reintentar".
+- No hay librería de npm viable para USB genérico + bytes ESC/POS crudos;
+  por eso existen los módulos nativos Kotlin propios. Antes de agregar una
+  librería de impresión térmica, revisar si de verdad expone un método para
+  mandar un `byte[]` arbitrario (la mayoría no lo hace, ver CHANGELOG).
+- El logo del ticket está precalculado como bytes fijos
+  (`src/escpos/logoRasterCommand.ts`) porque React Native no trae `zlib`/`fs`
+  de Node para decodificar el PNG en runtime. Si el logo cambia en la POS,
+  hay que regenerar este archivo (ver comentario ahí).
+- No hay forma de probar impresión física (USB o WiFi) en un entorno de
+  desarrollo/CI — el patrón de este repo es testear la orquestación con
+  dependencias simuladas (`__tests__/processPrintJob.test.ts`,
+  `__tests__/connectionStatus.test.ts`), igual que se prueba un cobro con una
+  pasarela de pago simulada en vez de una tarjeta real.
