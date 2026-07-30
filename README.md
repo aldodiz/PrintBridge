@@ -145,21 +145,28 @@ scripts/mock-print-jobs-server.js  # servidor mock del contrato de la POS
 
 ### Contrato con el backend de la POS
 
-`src/api/printJobs.ts` asume este contrato (documentado ahí mismo, y
+`src/api/printJobs.ts` implementa este contrato (documentado ahí mismo, y
 replicado por `scripts/mock-print-jobs-server.js` para poder desarrollar sin
-el backend real):
+el backend real) contra las rutas ya existentes en el repo de la POS
+(`app/api/print-jobs/*`, ver `lib/printer/print-jobs.ts` ahí):
 
 ```
 GET  {baseUrl}/api/print-jobs/pending
+  Header: X-Print-Bridge-Token: <token>
   -> 200 { jobs: Array<{ id: string, ticket: ReceiptData }> }  (o un array plano)
+  -> 401 si falta o no coincide el token
 
 POST {baseUrl}/api/print-jobs/:id/confirm
+  Header: X-Print-Bridge-Token: <token>
   -> 200 (cualquier body) al confirmar impreso
+  -> 401 si falta o no coincide el token
 ```
 
 `ReceiptData` es el mismo shape que devuelve `GET /api/orders/:id/receipt`
-en el repo de la POS. **Este proyecto no toca el repo de la POS** — ver
-[SESSION.md](./SESSION.md) para el estado de esa dependencia pendiente.
+en el repo de la POS. El token se configura en la pantalla principal (junto
+al servidor de la POS) y debe coincidir exactamente con la env var
+`PRINT_BRIDGE_TOKEN` del backend — ambas rutas quedan fuera del login normal
+de la POS porque este dispositivo no tiene sesión de cajero.
 
 ## Notas para un desarrollador nuevo
 

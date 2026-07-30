@@ -27,6 +27,9 @@ export function HomeScreen() {
     baseUrl,
     baseUrlLoaded,
     setBaseUrl,
+    token,
+    tokenLoaded,
+    setToken,
     polling,
     setPolling,
     usbDevices,
@@ -81,6 +84,17 @@ export function HomeScreen() {
             onChangeText={setBaseUrl}
             editable={baseUrlLoaded}
           />
+          <Text style={styles.hint}>Token (debe coincidir con PRINT_BRIDGE_TOKEN en la POS)</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="token compartido"
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            value={token}
+            onChangeText={setToken}
+            editable={tokenLoaded}
+          />
         </View>
 
         <View style={styles.card}>
@@ -132,12 +146,14 @@ export function HomeScreen() {
             <Switch
               value={polling}
               onValueChange={setPolling}
-              disabled={!baseUrl}
+              disabled={!baseUrl || !token}
               style={styles.switch}
             />
           </View>
-          {!baseUrl && (
-            <Text style={styles.hint}>Configura el servidor de la POS arriba para activar el polling.</Text>
+          {(!baseUrl || !token) && (
+            <Text style={styles.hint}>
+              Configura el servidor y el token de la POS arriba para activar el polling.
+            </Text>
           )}
         </View>
 

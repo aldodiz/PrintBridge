@@ -1,18 +1,21 @@
 // Cliente del endpoint de cola de impresión de la POS.
 //
-// IMPORTANTE (ver reporte del Paso 24): /api/print-jobs/pending y
-// /api/print-jobs/:id/confirm NO EXISTEN todavía en el repo de la POS al
-// escribir esto (se verificó directamente en el código: print-order.ts solo
-// deja el comentario "queda pendiente encolarlo como PrintJob"). Este
-// archivo asume el contrato documentado abajo; hay que confirmarlo o
-// ajustarlo cuando ese endpoint se implemente en la POS.
-//
-// Contrato asumido:
+// Contrato (ya implementado en el repo de la POS, ver
+// lib/printer/print-jobs.ts y app/api/print-jobs/*):
 //   GET  {baseUrl}/api/print-jobs/pending
 //     -> 200 { jobs: PendingPrintJob[] }  (o un array plano, se acepta cualquiera)
+//     -> 401 si falta o no coincide el header del token
 //   POST {baseUrl}/api/print-jobs/:id/confirm
 //     -> 200 al confirmar impreso
+//     -> 401 si falta o no coincide el header del token
+//
+// Ambas rutas están fuera del login normal de la POS (el dispositivo que
+// imprime no tiene sesión de cajero) y en su lugar exigen un token
+// compartido en el header "X-Print-Bridge-Token", que debe coincidir con la
+// env var PRINT_BRIDGE_TOKEN configurada en el backend.
 import type { ReceiptData } from "../escpos/receipt";
+
+const TOKEN_HEADER = "X-Print-Bridge-Token";
 
 export type PendingPrintJob = {
   /** id del PrintJob (no el id de la orden) — se usa para /confirm. */
@@ -27,11 +30,11 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
-export async function fetchPendingJobs(baseUrl: string): Promise<PendingPrintJob[]> {
+export async function fetchPendingJobs(baseUrl: string, token: string): Promise<PendingPrintJob[]> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/print-jobs/pending`;
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await fetch(url, { headers: { [TOKEN_HEADER]: token } });
   } catch (error) {
     throw new PrintJobsApiError(`No se pudo contactar ${url}: ${(error as Error).message}`);
   }
@@ -42,11 +45,11 @@ export async function fetchPendingJobs(baseUrl: string): Promise<PendingPrintJob
   return Array.isArray(body) ? body : (body.jobs ?? []);
 }
 
-export async function confirmJob(baseUrl: string, jobId: string): Promise<void> {
+export async function confirmJob(baseUrl: string, token: string, jobId: string): Promise<void> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/print-jobs/${jobId}/confirm`;
   let response: Response;
   try {
-    response = await fetch(url, { method: "POST" });
+    response = await fetch(url, { method: "POST", headers: { [TOKEN_HEADER]: token } });
   } catch (error) {
     throw new PrintJobsApiError(`No se pudo contactar ${url}: ${(error as Error).message}`);
   }

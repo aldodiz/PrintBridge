@@ -17,6 +17,7 @@ import {
 } from "./printerConfig";
 
 const BASE_URL_STORAGE_KEY = "printBridge.baseUrl";
+const TOKEN_STORAGE_KEY = "printBridge.token";
 const POLL_INTERVAL_MS = 4000;
 const CONNECTION_CHECK_INTERVAL_MS = 12000;
 
@@ -29,6 +30,8 @@ export type LastResult =
 export function usePrintBridge() {
   const [baseUrl, setBaseUrlState] = useState("");
   const [baseUrlLoaded, setBaseUrlLoaded] = useState(false);
+  const [token, setTokenState] = useState("");
+  const [tokenLoaded, setTokenLoaded] = useState(false);
   const [polling, setPolling] = useState(false);
   const [usbDevices, setUsbDevices] = useState<UsbDeviceInfo[]>([]);
   const [lastResult, setLastResult] = useState<LastResult>({ status: "idle" });
@@ -45,6 +48,7 @@ export function usePrintBridge() {
   // intervalo (impresora lenta, red lenta).
   const processingRef = useRef(false);
   const baseUrlRef = useRef("");
+  const tokenRef = useRef("");
   const printerConfigRef = useRef(printerConfig);
 
   useEffect(() => {
@@ -54,6 +58,16 @@ export function usePrintBridge() {
         baseUrlRef.current = stored;
       }
       setBaseUrlLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.getItem(TOKEN_STORAGE_KEY).then((stored) => {
+      if (stored) {
+        setTokenState(stored);
+        tokenRef.current = stored;
+      }
+      setTokenLoaded(true);
     });
   }, []);
 
@@ -69,6 +83,14 @@ export function usePrintBridge() {
     setBaseUrlState(value);
     baseUrlRef.current = value;
     AsyncStorage.setItem(BASE_URL_STORAGE_KEY, value).catch(() => {
+      // no crítico: si falla persistir, solo se pierde el valor al reabrir.
+    });
+  }, []);
+
+  const setToken = useCallback((value: string) => {
+    setTokenState(value);
+    tokenRef.current = value;
+    AsyncStorage.setItem(TOKEN_STORAGE_KEY, value).catch(() => {
       // no crítico: si falla persistir, solo se pierde el valor al reabrir.
     });
   }, []);
@@ -155,7 +177,7 @@ export function usePrintBridge() {
           config.method === "usb"
             ? (bytes) => UsbPrinter.printBytes(bytes)
             : (bytes) => WifiPrinter.printBytes(config.wifiIp, config.wifiPort, bytes),
-        confirmJob: (jobId) => confirmJob(baseUrlRef.current, jobId),
+        confirmJob: (jobId) => confirmJob(baseUrlRef.current, tokenRef.current, jobId),
       });
 
       if (!result.ok) {
@@ -176,10 +198,10 @@ export function usePrintBridge() {
 
   const pollOnce = useCallback(async () => {
     if (processingRef.current) return;
-    if (!baseUrlRef.current) return;
+    if (!baseUrlRef.current || !tokenRef.current) return;
     processingRef.current = true;
     try {
-      const jobs = await fetchPendingJobs(baseUrlRef.current);
+      const jobs = await fetchPendingJobs(baseUrlRef.current, tokenRef.current);
       for (const job of jobs) {
         const ok = await processJob(job);
         if (!ok) break; // no seguir martillando si la impresora está mal
@@ -206,6 +228,9 @@ export function usePrintBridge() {
     baseUrl,
     baseUrlLoaded,
     setBaseUrl,
+    token,
+    tokenLoaded,
+    setToken,
     polling,
     setPolling,
     usbDevices,
